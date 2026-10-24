@@ -1,3 +1,0 @@
-do_token = "dop_v1_ca2a6f023b8ad6813bf91b529102529f83b86327be8b1cd276e1d0b9e922d49e"
-
-#YOUR_TOKEN
