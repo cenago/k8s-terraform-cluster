@@ -1,61 +1,70 @@
 terraform {
-  required_version = ">= 1.5.0"
   required_providers {
     digitalocean = {
       source  = "digitalocean/digitalocean"
       version = "~> 2.0"
     }
-    kubernetes = {
-      source  = "hashicorp/kubernetes"
-      version = "~> 2.23"
-    }
-    helm = {
-      source  = "hashicorp/helm"
-      version = "~> 2.12"
-    }
   }
-}
-
-# Configure your DigitalOcean Token (passed via environment variable: export TF_VAR_do_token="your_token")
-variable "do_token" {
-  type      = string
-  sensitive = true
 }
 
 provider "digitalocean" {
   token = var.do_token
 }
 
-# 1. Provision the DigitalOcean Kubernetes Cluster
-resource "digitalocean_kubernetes_cluster" "primary" {
-  name    = "srisaiela-cluster"
-  region  = "blr1"
-  version = "1.31.2-do.0" # Use a stable current DO k8s version
+# Droplet for the Kubernetes Master Node
+resource "digitalocean_droplet" "k8s_master" {
+  count   = 1
+  name    = "k8s-master-${count.index}"
+  region  = var.region
+  size    = var.size
+  image   = var.image
+  ssh_keys = var.ssh_key_ids
 
-  node_pool {
-    name       = "autoscale-pool"
-    size       = "s-2vcpu-4gb"
-    auto_scale = true
-    min_nodes  = 1
-    max_nodes  = 3
-  }
+  # Optional: User data script to install Kubernetes components
+  user_data = <<-EOF
+              #!/bin/bash
+              set -e
+              apt-get update
+              apt-get install -y docker.io
+              curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+              echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
+              apt-get update
+              apt-get install -y kubelet kubeadm kubectl
+              apt-mark hold kubelet kubeadm kubectl
+
+              # Initialize Kubernetes
+              kubeadm init --pod-network-cidr=192.168.0.0/16
+
+              # Set kubectl for the root user
+              mkdir -p $HOME/.kube
+              cp -i /etc/kubernetes/admin.conf $HOME/.kube/config
+              chown $(id -u):$(id -g) $HOME/.kube/config
+              EOF
 }
 
-# Configure Kubernetes and Helm providers using the created cluster credentials
-provider "kubernetes" {
-  host  = digitalocean_kubernetes_cluster.primary.endpoint
-  token = digitalocean_kubernetes_cluster.primary.kube_config[0].token
-  cluster_ca_certificate = base64decode(
-    digitalocean_kubernetes_cluster.primary.kube_config[0].cluster_ca_certificate
-  )
+# Droplets for Kubernetes Worker Nodes
+resource "digitalocean_droplet" "k8s_workers" {
+  count   = var.worker_count
+  name    = "k8s-worker-${count.index}"
+  region  = var.region
+  size    = var.size
+  image   = var.image
+  ssh_keys = var.ssh_key_ids
+
+  # Optional: User data script to install Kubernetes components
+  user_data = <<-EOF
+              #!/bin/bash
+              set -e
+              apt-get update
+              apt-get install -y docker.io
+              curl -s https://packages.cloud.google.com/apt/doc/apt-key.gpg | apt-key add -
+              echo "deb https://apt.kubernetes.io/ kubernetes-xenial main" > /etc/apt/sources.list.d/kubernetes.list
+              apt-get update
+              apt-get install -y kubelet kubeadm kubectl
+              apt-mark hold kubelet kubeadm kubectl
+
+              # Join the Kubernetes cluster
+              kubeadm join ${digitalocean_droplet.k8s_master[0].ipv4_address}:6443 --token <YOUR_TOKEN> --discovery-token-ca-cert-hash sha256:<YOUR_HASH>
+              EOF
 }
 
-provider "helm" {
-  kubernetes {
-    host  = digitalocean_kubernetes_cluster.primary.endpoint
-    token = digitalocean_kubernetes_cluster.primary.kube_config[0].token
-    cluster_ca_certificate = base64decode(
-      digitalocean_kubernetes_cluster.primary.kube_config[0].cluster_ca_certificate
-    )
-  }
-}
